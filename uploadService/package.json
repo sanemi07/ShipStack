@@ -1,0 +1,28 @@
+{
+  "name": "shipstack",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sanemi07/ShipStack.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/sanemi07/ShipStack/issues"
+  },
+  "homepage": "https://github.com/sanemi07/ShipStack#readme",
+  "dependencies": {
+    "@types/express": "^5.0.6",
+    "aws-sdk": "^2.1693.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "redis": "^5.11.0",
+    "simple-git": "^3.33.0"
+  }
+}
