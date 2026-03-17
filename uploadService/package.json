@@ -19,9 +19,11 @@
   },
   "homepage": "https://github.com/sanemi07/ShipStack#readme",
   "dependencies": {
+    "@types/dotenv": "^6.1.1",
     "@types/express": "^5.0.6",
     "aws-sdk": "^2.1693.0",
     "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "nanoid": "^5.1.7",
     "redis": "^5.11.0",
