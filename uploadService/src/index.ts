@@ -43,7 +43,7 @@ app.post("/deploy",async(req,res)=>{
     uploadFile(file.slice(__dirname.length + 1), file)
   )
 );
-publisher.lPush("build-queue",id)
+await publisher.lPush("build-queue",id)
         res.status(200).json({id:id})
         
 
