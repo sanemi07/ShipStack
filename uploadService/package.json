@@ -1,0 +1,28 @@
+{
+  "name": "uploadservice",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1011.0",
+    "@types/dotenv": "^6.1.1",
+    "@types/express": "^5.0.6",
+    "aws-sdk": "^2.1693.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "nanoid": "^5.1.7",
+    "redis": "^5.11.0",
+    "simple-git": "^3.33.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19"
+  }
+}
