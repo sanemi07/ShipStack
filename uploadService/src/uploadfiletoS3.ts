@@ -2,21 +2,32 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import fs from 'fs'
 
+function getRequiredEnv(name: string) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value;
+}
+
+function getS3Client() {
+  return new S3Client({
+    region: getRequiredEnv("AWS_REGION"),
+    credentials: {
+      accessKeyId: getRequiredEnv("AWS_KEY"),
+      secretAccessKey: getRequiredEnv("AWS_SECRET"),
+    },
+  });
+}
+
 export const uploadFile=async(fileName:string,localFilePath:string)=>{
-    const s3Client = new S3Client({
-  region: process.env.AWS_REGION!,
-  credentials: {
-    accessKeyId: process.env.AWS_KEY!,
-    secretAccessKey: process.env.AWS_SECRET!,
-  },
-});
-    
         const fileStream=fs.createReadStream(localFilePath)
        const upload=new Upload({
-        client:s3Client,
+        client:getS3Client(),
         params:{
             Body:fileStream,
-            Bucket:process.env.AWS_BUCKET!,
+            Bucket:getRequiredEnv("AWS_BUCKET"),
         Key:fileName        }
 
     
