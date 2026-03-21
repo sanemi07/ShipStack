@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import { pipeline } from "stream/promises";
 
-function getRequiredEnv(name: string) {
+export function getRequiredEnv(name: string) {
   const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
@@ -18,7 +18,7 @@ function getRequiredEnv(name: string) {
   return value;
 }
 
-function getS3Client() {
+export function getS3Client() {
   return new S3Client({
     region: getRequiredEnv("AWS_REGION"),
     credentials: {
@@ -30,16 +30,30 @@ function getS3Client() {
 
 const __fileName = fileURLToPath(import.meta.url);
 const __dirname = dirname(__fileName);
+const DOWNLOAD_ROOT = path.resolve(__dirname, "downloads");
+
+function resolveDownloadPath(key: string) {
+  const normalizedKey = key.replace(/\\/g, "/");
+  const resolvedPath = path.resolve(DOWNLOAD_ROOT, normalizedKey);
+  const relativePath = path.relative(DOWNLOAD_ROOT, resolvedPath);
+
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw new Error(`Refusing to write S3 object outside download root: ${key}`);
+  }
+
+  return resolvedPath;
+}
 
 export const downloadFilesS3 = async (prefix: string) => {
   const s3Client = getS3Client();
+  const bucket = getRequiredEnv("AWS_BUCKET");
   let continuationToken: string | undefined;
   let downloadedCount = 0;
 
   do {
     const listResponse = await s3Client.send(
       new ListObjectsV2Command({
-        Bucket: getRequiredEnv("AWS_BUCKET"),
+        Bucket: bucket,
         Prefix: prefix,
         ContinuationToken: continuationToken,
       })
@@ -47,31 +61,27 @@ export const downloadFilesS3 = async (prefix: string) => {
 
     const allPromises =
       listResponse.Contents?.map(async ({ Key }) => {
-        if (!Key) return;
+        if (!Key || Key.endsWith("/")) return;
 
-        const finalOutputPath = path.join(
-          __dirname,
-          "downloads",
-          Key
-        );
-
+        const finalOutputPath = resolveDownloadPath(Key);
         const dirName = path.dirname(finalOutputPath);
 
-        // ✅ safe directory creation
         fs.mkdirSync(dirName, { recursive: true });
 
         const response = await s3Client.send(
           new GetObjectCommand({
-            Bucket: getRequiredEnv("AWS_BUCKET"),
+            Bucket: bucket,
             Key,
           })
         );
 
         const body = response.Body;
-        if (!body) return;
+        if (!body) {
+          throw new Error(`S3 returned an empty body for object: ${Key}`);
+        }
 
         await pipeline(
-          body as any,
+          body as NodeJS.ReadableStream,
           fs.createWriteStream(finalOutputPath)
         );
 
@@ -79,12 +89,8 @@ export const downloadFilesS3 = async (prefix: string) => {
         console.log("Downloaded:", Key);
       }) || [];
 
-    // ✅ wait for all downloads in this batch
     await Promise.all(allPromises);
-
-    // ✅ update pagination AFTER downloads
     continuationToken = listResponse.NextContinuationToken;
-
   } while (continuationToken);
 
   if (downloadedCount === 0) {
