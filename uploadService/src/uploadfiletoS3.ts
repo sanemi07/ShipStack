@@ -12,15 +12,19 @@ function getRequiredEnv(name: string) {
   return value;
 }
 
-const s3Client = new S3Client({
-  region: getRequiredEnv("AWS_REGION"),
-  credentials: {
-    accessKeyId: getRequiredEnv("AWS_KEY"),
-    secretAccessKey: getRequiredEnv("AWS_SECRET"),
-  },
-});
+function getS3Client() {
+  return new S3Client({
+    region: getRequiredEnv("AWS_REGION"),
+    credentials: {
+      accessKeyId: getRequiredEnv("AWS_KEY"),
+      secretAccessKey: getRequiredEnv("AWS_SECRET"),
+    },
+  });
+}
 
-const bucket = getRequiredEnv("AWS_BUCKET");
+function getBucketName() {
+  return getRequiredEnv("AWS_BUCKET");
+}
 
 function normalizeS3Key(fileName: string) {
   const normalized = fileName.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -34,6 +38,8 @@ function normalizeS3Key(fileName: string) {
 
 export const uploadFile = async (fileName: string, localFilePath: string) => {
   const resolvedLocalPath = path.resolve(localFilePath);
+  const s3Client = getS3Client();
+  const bucket = getBucketName();
 
   if (!fs.existsSync(resolvedLocalPath)) {
     throw new Error(`Local file does not exist: ${resolvedLocalPath}`);

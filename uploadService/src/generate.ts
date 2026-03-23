@@ -1,6 +1,7 @@
-import { nanoid } from "nanoid"
+import { customAlphabet } from "nanoid";
 
-export const genertateId=()=>{
-    const id=nanoid()
-    return id
-}
+const generateDnsSafeId = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789-", 21);
+
+export const genertateId = () => {
+  return generateDnsSafeId();
+};

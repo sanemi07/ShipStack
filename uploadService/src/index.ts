@@ -18,6 +18,9 @@ const git = simpleGit();
 const publisher = createClient({
   url: process.env.REDIS_URL || "redis://127.0.0.1:6379",
 });
+const subscriber=createClient({
+  url: process.env.REDIS_URL || "redis://127.0.0.1:6379",
+});
 
 const __fileName = fileURLToPath(import.meta.url);
 const __dirname = dirname(__fileName);
@@ -110,6 +113,7 @@ app.post("/deploy", async (req, res) => {
     console.log("Pushing to Redis:", id);
     await publisher.lPush("build-queue", id);
     console.log("Pushed successfully");
+    await publisher.hSet("status",id,"uploaded")
 
     return res.status(200).json({ id });
   } catch (error) {
@@ -127,13 +131,21 @@ app.post("/deploy", async (req, res) => {
     }
   }
 });
+app.get("/status", async (req, res) => {
+    const id = req.query.id;
+    const response = await subscriber.hGet("status", id as string);
+    res.json({
+        status: response
+    })
+})
 
 async function startServer() {
   try {
     await publisher.connect();
+    await subscriber.connect()
     console.log("Connected to Redis");
 
-    app.listen(process.env.PORT || 3000, () => {
+    app.listen(process.env.PORT || 3002, () => {
       console.log(`Server running on port ${process.env.PORT || 3000}`);
     });
   } catch (err) {

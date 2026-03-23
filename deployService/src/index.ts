@@ -10,6 +10,7 @@ import path from "path"
 import { __dirname } from "./downloadFromS3.js";
 
 const subscriber = createClient();
+const publisher=createClient()
 const DOWNLOAD_ROOT = path.resolve(__dirname, "downloads", "output");
 
 async function main() {
@@ -18,6 +19,7 @@ async function main() {
   });
 
   await subscriber.connect();
+  await publisher.connect()
 
   while (true) {
     const response = await subscriber.brPop("build-queue", 0);
@@ -49,6 +51,7 @@ async function main() {
       const files = getAllFiles(buildOutputPath);
       await uploadFilesWithConcurrency(files, buildOutputPath, `output/${deploymentId}/dist`);
       console.log("all uploads done")
+      publisher.hSet("status",deploymentId,"deployed")
 
       
 

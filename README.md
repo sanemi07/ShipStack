@@ -1,303 +1,394 @@
 # ShipStack
 
-ShipStack is a simplified Vercel-style deployment platform that accepts a frontend codebase, builds it inside an isolated Docker environment, and prepares the generated static assets for serving.
+ShipStack is a simplified Vercel-like deployment platform that accepts a frontend repository, builds it inside an isolated container, stores the generated artifacts in object storage, and serves the site through a unique deployment URL.
 
 ## Problem Statement
 
-Modern frontend deployment platforms hide a lot of backend engineering behind a simple "deploy" button. Under the hood, they need to accept untrusted user input, move source code through a build pipeline, isolate execution, store artifacts, and make deployments reproducible.
+Modern frontend deployment platforms hide a substantial amount of backend complexity behind a simple "deploy" button. Under the hood, they need to:
 
-This project explores that backend problem directly.
+- ingest untrusted project source code
+- build it in an isolated environment
+- store immutable artifacts durably
+- expose those artifacts through a low-latency serving layer
+- do all of the above asynchronously and safely
 
-ShipStack is useful because it demonstrates the core infrastructure behind platforms like Vercel or Netlify in a compact, understandable system:
+ShipStack exists to model that system end to end. The project is intentionally scoped down, but the architecture mirrors real deployment infrastructure: an upload API, a background build worker, Redis-backed job orchestration, S3-backed artifact storage, and a request service that resolves deployment IDs to static assets.
 
-- an upload pipeline that ingests project source code
-- a queue-driven deploy pipeline that decouples intake from builds
-- a containerized build environment with resource and privilege restrictions
-- an artifact-oriented architecture that can evolve into a production CDN-backed deployment system
+## Architecture Overview
 
-## High-Level Architecture
+ShipStack is organized as a multi-service backend rather than a single monolith. That separation matters because the services have very different responsibilities and scaling characteristics.
 
-The system is designed as multiple backend services with clear responsibilities:
-
-- `uploadService`
-  Accepts a repository URL, clones the project, collects files, uploads them to object storage, and pushes a build job into Redis.
-- `deployService`
-  Pulls build jobs from Redis, downloads project files for a deployment ID, runs an isolated Docker build, and produces static artifacts.
-- `requestService` planned
-  Will resolve deployment IDs or project domains to the generated build output and serve the correct static deployment.
-
-### Architecture Diagram
+- `uploadService` accepts deployment requests, clones repositories, uploads source files to object storage, queues build jobs, and exposes status polling.
+- `deployService` is the build engine. It consumes jobs from Redis, downloads source snapshots, builds inside Docker, and uploads compiled output.
+- `requestService` is the serving layer. It fetches built artifacts from S3 and streams them to clients with SPA fallback behavior.
+- `frontend` is a thin Next.js interface used to submit repository URLs and poll deployment state.
+- `Redis` is used for asynchronous job dispatch and deployment status tracking.
+- `S3` stores both uploaded source snapshots and final build artifacts.
 
 ```text
-Client / Frontend
-       |
-       v
-+------------------+
-|   uploadService  |
-|  - clone repo    |
-|  - upload source |
-|  - enqueue job   |
-+------------------+
-       |
-       v
-+------------------+
-|      Redis       |
-|   build-queue    |
-+------------------+
-       |
-       v
-+------------------+         +------------------+
-|   deployService  | <-----> |    AWS S3 /      |
-|  - download src  |         | object storage   |
-|  - docker build  |         | source + assets  |
-|  - emit logs     |         +------------------+
-+------------------+
-       |
-       v
-+------------------+
-| requestService   |
-| static serving   |
-| domain routing   |
-+------------------+
+                         +----------------------+
+                         |      Frontend UI     |
+                         |   Next.js dashboard  |
+                         +----------+-----------+
+                                    |
+                                    | POST /deploy
+                                    v
+                         +----------------------+
+                         |    uploadService     |
+                         |  clone + validate    |
+                         |  upload source files |
+                         +----+------------+----+
+                              |            |
+             writes source to |            | LPUSH build-queue
+                              v            v
+                        +-----------+   +--------+
+                        |    S3     |   | Redis  |
+                        | source +  |   | queue  |
+                        | build     |   | status |
+                        | artifacts |   +----+---+
+                        +-----+-----+        |
+                              ^              | BRPOP
+                              |              v
+                              |      +----------------------+
+                              |      |    deployService     |
+                              |      | download -> build -> |
+                              |      | upload dist -> mark  |
+                              |      +----------+-----------+
+                              |                 |
+                              |                 | HSET status=deployed
+                              |                 v
+                              |             +--------+
+                              |             | Redis  |
+                              |             +--------+
+                              |
+                              | GET object
+                              v
+                         +----------------------+
+                         |   requestService     |
+                         | resolve id -> stream |
+                         | static asset / SPA   |
+                         +----------+-----------+
+                                    |
+                                    v
+                           Unique deployment URL
 ```
 
-## System Workflow
+## Detailed Workflow
 
 ### 1. Upload
 
-The upload service receives a deployment request containing a repository URL. It clones the repository into a temporary local output directory, walks the cloned files, filters unsafe or unnecessary directories such as `.git`, and uploads the source tree to object storage using normalized S3 keys.
+The deployment starts when the client submits a repository URL to `uploadService`.
 
-### 2. Queue
+- the API validates that the repository URL is an absolute `http(s)` URL
+- a deployment ID is generated
+- the repository is cloned locally into a deployment-scoped directory
+- the source tree is enumerated and uploaded to S3 under `output/<deploymentId>/...`
+- the deployment ID is pushed into Redis list `build-queue`
+- Redis hash `status[deploymentId]` is set to `uploaded`
 
-After the upload completes, the upload service pushes the generated deployment ID into Redis. This separates user-facing intake from build execution and prevents the request lifecycle from being coupled to a potentially slow build.
+This keeps the API fast: it performs ingestion and queueing, but it does not block on the build itself.
 
-### 3. Download
+### 2. Build
 
-The deploy service listens to Redis using a blocking pop operation. When a job arrives, it downloads the project files associated with `output/<deploymentId>` into a local workspace under `downloads/output/<deploymentId>`.
+`deployService` blocks on Redis using `BRPOP`, which turns Redis into a lightweight asynchronous job queue.
 
-### 4. Build
+For each deployment:
 
-The deploy service starts a Docker container using `node:18-alpine`, mounts the downloaded project directory into `/app`, installs dependencies with `npm ci` or `npm install`, and runs `npm run build`.
+- source files are downloaded from S3 back onto the worker filesystem
+- the worker resolves the project path safely inside a fixed download root
+- the project is mounted into a Docker container
+- dependencies are installed
+- the build command is executed
+- the current implementation expects production output in `dist/`
 
-The build is intentionally constrained:
+### 3. Store
 
-- non-root container user
-- read-only container filesystem
-- writable `tmpfs` only for temporary files
-- limited CPU and memory
-- dropped Linux capabilities
-- `no-new-privileges`
+After a successful build:
 
-### 5. Artifact Output
+- the worker recursively walks the `dist/` directory
+- artifacts are uploaded to S3 under `output/<deploymentId>/dist/...`
+- Redis hash `status[deploymentId]` is updated to `deployed`
 
-For a typical Vite or React build, Docker writes the generated static assets back into the mounted project directory, usually under:
+At this point the deployment becomes immutable from the perspective of the serving layer.
 
-`downloads/output/<deploymentId>/dist`
+### 4. Serve
 
-That makes the output available for the next serving or upload stage.
+`requestService` maps an incoming request to a deployment in one of two ways:
+
+- query parameter: `/?id=<deploymentId>`
+- subdomain-style routing: `<deploymentId>.<domain>`
+
+It then:
+
+- tries to fetch the exact requested asset from S3
+- falls back to `index.html` for non-asset paths
+- streams the object directly to the client
+- sets content type headers based on file extension when needed
+
+That gives ChipStack the behavior expected from a static hosting platform, including client-side routed single-page apps.
 
 ## Key Features
 
-- Containerized frontend builds using Docker
-- Queue-based asynchronous deployment processing with Redis
-- Source upload and artifact-oriented workflow using S3-compatible object storage
-- Build isolation through non-root execution, privilege dropping, and resource limits
-- Cross-platform path handling for Windows and WSL-based Docker setups
-- Streamed build logs for deployment visibility
-- Safer file handling with path validation, root-bound checks, and symlink avoidance
+- Containerized builds using Docker rather than building directly on the host
+- Redis-backed asynchronous job handling so uploads and builds are decoupled
+- S3-backed artifact storage for durable, deployment-scoped output
+- Static asset serving with SPA fallback semantics
+- Deployment ID based routing for preview environments
+- Cross-platform path handling for Windows and WSL-backed Docker Desktop setups
+- Defensive path validation to prevent directory traversal and unsafe filesystem writes
+- Build-time isolation controls such as read-only root filesystem, dropped Linux capabilities, process limits, and non-root execution
 
-## Technical Deep Dive
+## Deep Dive
 
-### Docker-Based Build System
+### Docker Build System
 
-The deploy service creates a fresh container for every build job. Instead of running build commands directly on the host machine, it runs them inside `node:18-alpine` with a mounted project directory. This keeps the host environment cleaner and gives the system a natural place to apply CPU, memory, and privilege restrictions.
+The deploy worker runs builds inside `node:22-alpine` containers. The choice is important: the host machine never executes arbitrary project build scripts directly.
 
-The build command is selected dynamically:
+Current build behavior:
 
-- `npm ci` when `package-lock.json` exists
-- `npm install` otherwise
+- detects package manager from lockfiles and `packageManager` metadata
+- supports `npm`, `pnpm`, and `yarn`
+- mounts the checked-out project into `/app`
+- runs dependency installation followed by the build command
+- streams stdout and stderr with deployment ID prefixes for traceability
 
-This keeps builds closer to real-world project expectations while still allowing deterministic installs when a lockfile is present.
+This design is much closer to a real deployment platform than running `npm run build` on the server process itself. It creates a clean boundary between orchestration code and untrusted user code.
 
-### Path Handling and Windows / WSL Compatibility
+### Security Decisions
 
-One of the harder parts of local container orchestration is path translation. Docker on Linux, Docker Desktop on Windows, and Docker via WSL do not always interpret host mount paths the same way.
+The build container is intentionally locked down. The current worker applies the following controls:
 
-The deploy service normalizes project paths before mounting them into Docker and supports Windows-to-WSL path translation when needed. This prevents broken bind mounts such as passing a Windows path into a Linux-style Docker runtime.
+- `--user node`
+  The container does not run as root.
+- `--read-only`
+  The root filesystem is immutable.
+- `--tmpfs /tmp:rw,noexec,nosuid,size=512m`
+  Temporary writes are allowed only in memory-backed scratch space.
+- `--cap-drop=ALL`
+  Linux capabilities are removed.
+- `--security-opt no-new-privileges`
+  Processes cannot gain additional privileges.
+- `--memory=512m`
+  Prevents a single build from consuming unbounded memory.
+- `--cpus=0.5`
+  Caps CPU usage per build.
+- `--pids-limit=256`
+  Prevents fork-heavy or runaway processes.
 
-### Job Validation and Security
+This is not a complete sandbox in the same category as Firecracker or gVisor, but for a self-built deployment system it demonstrates the right security posture: assume builds are untrusted and constrain them aggressively.
 
-Deployment IDs are validated before being used to construct filesystem paths. Downloaded files are also forced to remain under an expected root directory, which helps prevent traversal bugs and accidental writes outside the deployment workspace.
+### Path Handling Across Windows and WSL
 
-On the upload side, repository URLs are validated and restricted to HTTP(S), recursive file walking is bounded to the clone root, and symlinks are skipped. This reduces risk from hostile repositories and accidental filesystem escape.
+One of the more subtle engineering problems in a system like this is path translation.
 
-### Resource Limiting
+ChipStack runs on Windows-hosted development environments while still using Linux containers. The deploy worker handles that by:
 
-The build container is started with explicit limits so that a single deployment cannot monopolize the machine:
+- normalizing host paths before mounting them into Docker
+- converting `C:\...` style paths into `/mnt/c/...` when `DOCKER_DESKTOP_WSL=1`
+- rejecting deployment IDs and resolved paths that escape the intended root directories
+- converting local filesystem paths into normalized S3 keys with forward slashes
 
-- memory cap
-- CPU limit
-- PID limit
-- read-only root filesystem
-- dedicated writable temp space
+This is a small implementation detail with a big operational impact. Without it, builds fail inconsistently depending on whether Docker is running through native Windows integration or WSL-backed mounts.
 
-This is not equivalent to production-grade sandboxing, but it is a meaningful engineering step toward safer multi-tenant builds.
+### Failure Handling
 
-### Error Handling and Observability
+A production-style build system is mostly about failure modes, not the happy path.
 
-The build pipeline streams stdout and stderr with the deployment ID prefixed in logs, which makes it easier to correlate build events to jobs. The deploy service also waits for Docker process completion correctly, surfaces startup failures, and reports job-level failures without crashing the entire worker loop.
+ChipStack explicitly handles:
+
+- invalid repository URLs before clone begins
+- empty or malformed deployment IDs from the queue
+- missing project directories on the build worker
+- Docker engine availability and permission errors
+- missing build output directories
+- missing S3 objects in the serving layer
+- stream failures while proxying artifacts back to the client
+
+The current system updates status to `uploaded` and `deployed`; failed jobs are logged but do not yet write a durable terminal failure state. That is a realistic tradeoff for an early-stage deployment system and also one of the clearest next improvements.
 
 ## Tech Stack
 
-- Node.js
-- TypeScript
-- Docker
-- Redis
-- AWS S3
-- Express
-- simple-git
-- AWS SDK v3
+- Backend runtime: Node.js
+- Language: TypeScript
+- API layer: Express
+- Frontend: Next.js 15 + React 19
+- Build isolation: Docker
+- Queue and state store: Redis
+- Artifact storage: Amazon S3
+- Git operations: `simple-git`
+- Package managers supported inside builds: npm, pnpm, yarn
 
 ## Folder Structure
 
 ```text
-shipStack/
-├── README.md
+ChipStack/
+├── frontend/
+│   ├── app/
+│   │   ├── dashboard/
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── components/
+│   │   ├── DashboardClient.tsx
+│   │   ├── DeployForm.tsx
+│   │   ├── Spinner.tsx
+│   │   └── StatusCard.tsx
+│   ├── lib/
+│   │   └── api.ts
+│   └── package.json
 ├── uploadService/
 │   ├── src/
 │   │   ├── index.ts
+│   │   ├── generate.ts
 │   │   ├── getAllFilePath.ts
-│   │   ├── uploadfiletoS3.ts
-│   │   └── generate.ts
+│   │   └── uploadfiletoS3.ts
 │   ├── dist/
-│   │   └── output/
 │   └── package.json
-└── deployService/
-    ├── src/
-    │   ├── index.ts
-    │   ├── buildjs.ts
-    │   └── downloadFromS3.ts
-    ├── dist/
-    │   └── downloads/
-    │       └── output/
-    └── package.json
+├── deployService/
+│   ├── src/
+│   │   ├── index.ts
+│   │   ├── buildjs.ts
+│   │   ├── downloadFromS3.ts
+│   │   └── uploadtoS3.ts
+│   ├── dist/
+│   └── package.json
+├── requestService/
+│   ├── src/
+│   │   └── index.ts
+│   ├── dist/
+│   └── package.json
+└── README.md
 ```
 
-### Important Runtime Directories
-
-- `uploadService/dist/output/`
-  Temporary checkout location used by the upload pipeline before cleanup
-- `deployService/dist/downloads/output/<deploymentId>/`
-  Downloaded source tree for a deployment
-- `deployService/dist/downloads/output/<deploymentId>/dist/`
-  Typical frontend build output directory after `npm run build`
-
-## Challenges Faced and Solutions
+## Challenges Faced
 
 ### 1. Docker on Windows and WSL
 
-Bind mounts behave differently depending on whether Docker is running through Windows Desktop, Linux containers, or WSL integration. I solved this by explicitly normalizing host paths and adding Windows-to-WSL path conversion logic for Docker mounts.
+Running Linux build containers from a Windows host introduces mount path inconsistencies that do not exist on Linux. The worker needs to understand when to pass native Windows-style normalized paths and when to translate them into WSL mount paths.
 
-### 2. Async Build Handling
+### 2. Asynchronous Builds
 
-An early version of the deploy worker resolved the job before Docker had actually finished. That caused false-positive deployments. The fix was to make the worker await the Docker process lifecycle and only mark success after a zero exit code.
+The API cannot synchronously wait for a build to finish without turning a deployment request into a long-lived, fragile HTTP connection. Moving build execution behind Redis forces cleaner service boundaries and better failure isolation.
 
-### 3. Filesystem Safety
+### 3. Path Conversion and Safety
 
-Directly joining deployment IDs or downloaded object keys into paths creates traversal risk. I added root-bound path resolution checks on both upload and download flows so files cannot escape the expected workspace.
+This system constantly crosses boundaries:
 
-### 4. Build Isolation vs Practicality
+- URL -> local clone path
+- local file path -> S3 object key
+- S3 object key -> worker download path
+- worker path -> Docker mount path
 
-A fully locked-down container can break package installation if writable paths are unavailable. I kept the root filesystem read-only, but redirected npm cache and temp usage into controlled writable paths so builds still succeed.
+Every conversion is a place where traversal bugs or broken mounts can appear. The current code adds explicit path normalization and root-boundary checks in multiple layers for that reason.
 
-### 5. Queue Decoupling
+### 4. Container Failures
 
-Without a queue, upload requests would be tightly coupled to build time. Redis allowed the system to split intake from execution and made the architecture closer to a real deployment platform.
+Build infrastructure fails in ways ordinary web APIs do not:
 
-## What I Would Improve Next
+- Docker daemon is down
+- user lacks access to the Docker socket / named pipe
+- dependencies exceed memory budget
+- project writes output somewhere other than `dist/`
+- install scripts behave differently across package managers
 
-- Add artifact caching to avoid rebuilding unchanged deployments
-- Upload the built `dist/` output back to object storage automatically
-- Add a CDN-backed request service for static serving and custom domain mapping
-- Introduce structured deployment state tracking instead of a simple queue-only model
-- Add OpenTelemetry or equivalent observability for traces, metrics, and logs
-- Replace static AWS credentials with IAM roles or short-lived credentials
-- Add stronger sandboxing for untrusted code using Firecracker, gVisor, or isolated build workers
-- Add build timeouts, retries, and dead-letter queue handling
-- Add dependency caching to reduce cold-start build times
+Handling those failures cleanly is a core part of making the platform feel reliable.
+
+## Future Improvements
+
+- CDN fronting with CloudFront to cache immutable artifacts closer to users
+- Build output caching keyed by lockfile and source hash
+- Parallel build workers with queue depth based autoscaling
+- Durable failed/cancelled status states in Redis or a database
+- Build log persistence and per-deployment log streaming to the UI
+- Support for `build/` output and framework-specific detection beyond `dist/`
+- Observability via structured logging, metrics, traces, and alerting
+- Rate limiting, auth, and per-user quotas for safer multi-tenant usage
+- Stronger sandboxing with network egress controls and ephemeral worker hosts
 
 ## How to Run Locally
 
 ### Prerequisites
 
 - Node.js 18+
-- Docker Desktop or a working Docker daemon
-- Redis
-- AWS S3 bucket or S3-compatible storage
+- Docker Desktop
+- Redis running locally on `redis://127.0.0.1:6379` or a reachable Redis instance
+- An S3 bucket or S3-compatible object store
 
-### Environment Variables
+### 1. Install dependencies
 
-Configure both services with the required environment variables:
+```bash
+cd frontend && npm install
+cd ../uploadService && npm install
+cd ../deployService && npm install
+cd ../requestService && npm install
+```
+
+### 2. Configure environment variables
+
+Create service-local `.env` files with placeholders like:
 
 ```env
+PORT=3002
+REDIS_URL=redis://127.0.0.1:6379
 AWS_REGION=your-region
 AWS_BUCKET=your-bucket
 AWS_KEY=your-access-key
 AWS_SECRET=your-secret-key
-REDIS_URL=redis://127.0.0.1:6379
-PORT=3000
+DOCKER_DESKTOP_WSL=1
 ```
 
-### Install Dependencies
+Notes:
+
+- `uploadService` uses `PORT` and `REDIS_URL`
+- `deployService` uses AWS credentials and optional `DOCKER_DESKTOP_WSL=1` for WSL path translation
+- `requestService` uses AWS credentials and `PORT`
+- `frontend/.env.local` should point to the upload and request services
+
+Example frontend config:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:3002
+NEXT_PUBLIC_REQUEST_SERVICE_URL=http://localhost:3001
+NEXT_PUBLIC_REQUEST_SERVICE_HOST_TEMPLATE=http://{id}:3001
+```
+
+### 3. Start the services
+
+The repo already contains compiled backend output under each service's `dist/` folder, so the fastest local path is to run the compiled services directly.
 
 ```bash
-cd uploadService
-npm install
-
-cd ../deployService
-npm install
+cd uploadService && node dist/index.js
+cd deployService && node dist/index.js
+cd requestService && node dist/index.js
+cd frontend && npm run dev
 ```
 
-### Run the Upload Service
+Default ports in the current repo:
 
-```bash
-cd uploadService
-node dist/index.js
-```
+- `uploadService`: `3002`
+- `deployService`: worker process, no public HTTP port required
+- `requestService`: `3001`
+- `frontend`: `3000`
 
-### Run the Deploy Service
+### 4. Test a deployment
 
-```bash
-cd deployService
-node dist/index.js
-```
+1. Open the frontend.
+2. Submit a public Git repository URL.
+3. Wait for the dashboard to poll until the deployment reaches `deployed`.
+4. Open the preview URL returned by the frontend.
 
-### Trigger a Deployment
-
-Example request:
-
-```bash
-curl -X POST http://localhost:3000/deploy \
-  -H "Content-Type: application/json" \
-  -d "{\"repourl\":\"https://github.com/your-user/your-frontend-repo.git\"}"
-```
-
-### Expected Flow
-
-- upload service clones and uploads source files
-- Redis receives the deployment ID
-- deploy service downloads the source
-- Docker installs dependencies and runs the build
-- generated static assets appear in the deployment output directory
+Important implementation note: the current worker expects the built frontend to emit its production files into `dist/`.
 
 ## Why This Project Stands Out
 
-This project is not just a CRUD backend or a wrapper around a single API. It models the core mechanics of a real deployment platform:
+ChipStack stands out because it is not just another CRUD backend or a thin wrapper around a cloud service. It tackles a genuinely systems-oriented problem: safely executing untrusted build workloads, moving artifacts through an asynchronous pipeline, and serving immutable deployments through a storage-backed request layer.
 
-- asynchronous job processing
-- isolated build execution
-- artifact-oriented architecture
-- cross-service coordination
-- practical security tradeoffs
+From a recruiter or interview perspective, the project demonstrates several signals that matter:
 
-It is directly relevant to real-world infrastructure used by products like Vercel, Netlify, and internal platform engineering teams. For recruiters and engineers, it demonstrates backend depth in system design, operational thinking, and the ability to turn a developer-facing product idea into a working distributed pipeline.
+- separation of control plane and execution plane responsibilities
+- understanding of why deployment systems are queue-driven
+- practical container hardening decisions rather than superficial Docker usage
+- awareness of object storage as the source of truth for build artifacts
+- handling of cross-platform operational issues such as Windows/WSL mount translation
+- design tradeoffs around reliability, failure states, and scalability
+
+In short, ChipStack reads like infrastructure because it is infrastructure. It shows backend engineering beyond REST endpoints: orchestration, isolation, storage design, and deployment lifecycle management.

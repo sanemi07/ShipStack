@@ -6,6 +6,8 @@ import { fileURLToPath } from "url";
 
 const JOB_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
+type PackageManager = "npm" | "pnpm" | "yarn";
+
 function getDockerFailureMessage(stderr: string, code: number | null) {
   if (
     stderr.includes("dockerDesktopLinuxEngine") ||
@@ -22,13 +24,50 @@ function getDockerFailureMessage(stderr: string, code: number | null) {
   return `Build failed with exit code ${code ?? "unknown"}`;
 }
 
-function getBuildCommand(projectPath: string) {
-  const packageLockPath = path.join(projectPath, "package-lock.json");
-  const installCommand = fs.existsSync(packageLockPath)
-    ? "npm ci"
-    : "npm install";
+function detectPackageManager(projectPath: string): PackageManager {
+  const packageJsonPath = path.join(projectPath, "package.json");
 
-  return `echo '[builder] Installing dependencies' && ${installCommand} && echo '[builder] Running build' && npm run build`;
+  if (!fs.existsSync(packageJsonPath)) {
+    throw new Error(`package.json not found in project root: ${projectPath}`);
+  }
+
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+    packageManager?: string;
+  };
+
+  if (fs.existsSync(path.join(projectPath, "pnpm-lock.yaml"))) {
+    return "pnpm";
+  }
+
+  if (fs.existsSync(path.join(projectPath, "yarn.lock"))) {
+    return "yarn";
+  }
+
+  if (typeof packageJson.packageManager === "string") {
+    if (packageJson.packageManager.startsWith("pnpm@")) {
+      return "pnpm";
+    }
+
+    if (packageJson.packageManager.startsWith("yarn@")) {
+      return "yarn";
+    }
+  }
+
+  return "npm";
+}
+
+function getBuildCommand(projectPath: string) {
+  const packageManager = detectPackageManager(projectPath);
+
+  if (packageManager === "pnpm") {
+    return "echo '[builder] Installing dependencies with pnpm' && corepack enable && pnpm install --frozen-lockfile && echo '[builder] Running build' && pnpm run build";
+  }
+
+  if (packageManager === "yarn") {
+    return "echo '[builder] Installing dependencies with yarn' && corepack enable && yarn install --frozen-lockfile && echo '[builder] Running build' && yarn build";
+  }
+
+  return "echo '[builder] Installing dependencies with npm' && npm install --no-audit --no-fund && echo '[builder] Running build' && npm run build";
 }
 
 function validateJobId(id: string) {
@@ -121,7 +160,7 @@ export const buildProject = async (id: string) => {
         `${dockerPath}:/app`,
         "-w",
         "/app",
-        "node:18-alpine",
+        "node:22-alpine",
         "sh",
         "-c",
         buildCommand,

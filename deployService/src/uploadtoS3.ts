@@ -13,6 +13,25 @@ const IGNORED_DIRECTORIES = new Set([
 ]);
 const MAX_UPLOAD_CONCURRENCY = 8;
 
+const CONTENT_TYPES: Record<string, string> = {
+  ".css": "text/css; charset=utf-8",
+  ".gif": "image/gif",
+  ".html": "text/html; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".txt": "text/plain; charset=utf-8",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
 
 function normalizeS3Key(fileName: string) {
   const normalized = fileName.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -34,6 +53,11 @@ function resolveInsideRoot(rootPath: string, candidatePath: string) {
   }
 
   return resolvedCandidate;
+}
+
+function getContentType(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  return CONTENT_TYPES[extension] ?? "application/octet-stream";
 }
 
 export const getAllFiles = (dirPath: string, rootPath: string = dirPath): string[] => {
@@ -76,6 +100,7 @@ export const uploadFile = async (fileName: string, localFilePath: string) => {
     params: {
       Body: fileStream,
       Bucket: process.env.AWS_BUCKET,
+      ContentType: getContentType(resolvedLocalPath),
       Key: normalizeS3Key(fileName),
     },
   });
