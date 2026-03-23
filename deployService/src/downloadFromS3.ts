@@ -9,6 +9,13 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import { pipeline } from "stream/promises";
 
+const IGNORED_DIRECTORIES = new Set([
+  ".git",
+  "node_modules",
+  ".npm-cache",
+]);
+
+
 export function getRequiredEnv(name: string) {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -28,8 +35,8 @@ export function getS3Client() {
   });
 }
 
-const __fileName = fileURLToPath(import.meta.url);
-const __dirname = dirname(__fileName);
+export const __fileName = fileURLToPath(import.meta.url);
+export const __dirname = dirname(__fileName);
 const DOWNLOAD_ROOT = path.resolve(__dirname, "downloads");
 
 function resolveDownloadPath(key: string) {
@@ -99,3 +106,5 @@ export const downloadFilesS3 = async (prefix: string) => {
 
   return downloadedCount;
 };
+
+
