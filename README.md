@@ -1,6 +1,22 @@
 # ShipStack
 
-ShipStack is a simplified Vercel-like deployment platform that accepts a frontend repository, builds it inside an isolated container, stores the generated artifacts in object storage, and serves the site through a unique deployment URL.
+## 🚀 Overview
+
+ShipStack is a backend system that replicates how platforms like Vercel deploy frontend applications — handling untrusted code, building it in isolated environments, storing artifacts, and serving them via unique deployment URLs.
+
+This project focuses on the core infrastructure behind modern deployment platforms:
+- containerized build execution
+- asynchronous job orchestration
+- artifact storage and delivery
+
+---
+
+## 🔗 Links
+
+- GitHub: https://github.com/sanemi07/shipstack  
+- Status: In Progress (Core system implemented)
+
+
 
 ## Problem Statement
 
