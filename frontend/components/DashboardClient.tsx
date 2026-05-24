@@ -2,45 +2,40 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowLeft } from "lucide-react";
 
-import { Spinner } from "@/components/Spinner";
 import {
   BackendStatus,
   FrontendStatus,
   StatusCard,
 } from "@/components/StatusCard";
 import { getDeploymentStatus } from "@/lib/api";
+import { fadeUp } from "@/lib/motion";
 
+// ─── Constants preserved exactly from original ──────────────────
 const POLL_INTERVAL_MS = 2500;
 const BUILD_TIMEOUT_MS = 3 * 60 * 1000;
 
+// ─── Minimum animation dwell per state (UI-only, does not affect polling) ──
+const MIN_DWELL_MS = 3200;
+
+// ─── Status mapping preserved exactly from original ─────────────
 function mapBackendToFrontendStatus(
   status: BackendStatus,
-  hasTimedOut: boolean,
+  hasTimedOut: boolean
 ): FrontendStatus {
-  if (hasTimedOut) {
-    return "failed";
-  }
-
-  if (status === "uploaded") {
-    return "building";
-  }
-
-  if (status === "deployed") {
-    return "success";
-  }
-
+  if (hasTimedOut) return "failed";
+  if (status === "uploaded") return "building";
+  if (status === "deployed") return "success";
   return "pending";
 }
 
+// ─── Preview URL logic preserved exactly from original ──────────
 function getPreviewUrl(deploymentId: string) {
   const hostTemplate = process.env.NEXT_PUBLIC_REQUEST_SERVICE_HOST_TEMPLATE;
-
-  if (hostTemplate) {
-    return hostTemplate.replace("{id}", deploymentId);
-  }
-
+  if (hostTemplate) return hostTemplate.replace("{id}", deploymentId);
   const baseUrl =
     process.env.NEXT_PUBLIC_REQUEST_SERVICE_URL ?? "http://localhost:3001";
   return `${baseUrl.replace(/\/$/, "")}/?id=${encodeURIComponent(deploymentId)}`;
@@ -57,11 +52,41 @@ export function DashboardClient() {
 
   const previewUrl = useMemo(
     () => (deploymentId ? getPreviewUrl(deploymentId) : ""),
-    [deploymentId],
+    [deploymentId]
   );
 
   const frontendStatus = mapBackendToFrontendStatus(backendStatus, hasTimedOut);
 
+  // ─── Display status: lags behind frontendStatus by MIN_DWELL_MS ─────────
+  // This is purely visual — it ensures each cinematic animation scene plays
+  // for at least MIN_DWELL_MS before transitioning, even if AWS/Docker are fast.
+  const [displayStatus, setDisplayStatus] = useState<FrontendStatus>("pending");
+  const dwellTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dwellStart = useRef<number>(Date.now());
+  const queuedStatus = useRef<FrontendStatus | null>(null);
+
+  useEffect(() => {
+    if (frontendStatus === displayStatus) {
+      queuedStatus.current = null;
+      return;
+    }
+    const elapsed = Date.now() - dwellStart.current;
+    const wait = Math.max(0, MIN_DWELL_MS - elapsed);
+    queuedStatus.current = frontendStatus;
+    if (dwellTimer.current) clearTimeout(dwellTimer.current);
+    dwellTimer.current = setTimeout(() => {
+      if (queuedStatus.current !== null) {
+        dwellStart.current = Date.now();
+        setDisplayStatus(queuedStatus.current);
+        queuedStatus.current = null;
+      }
+    }, wait);
+    return () => {
+      if (dwellTimer.current) clearTimeout(dwellTimer.current);
+    };
+  }, [frontendStatus, displayStatus]);
+
+  // ─── Polling logic preserved exactly from original ─────────────
   useEffect(() => {
     if (!deploymentId) {
       setError("Missing deployment ID. Open this page with ?id=<deploymentId>.");
@@ -77,9 +102,7 @@ export function DashboardClient() {
         setIsPolling(true);
         const response = await getDeploymentStatus(deploymentId);
 
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
 
         setBackendStatus(response.status);
         setError(null);
@@ -87,24 +110,15 @@ export function DashboardClient() {
         if (response.status === "deployed") {
           setHasTimedOut(false);
           setIsPolling(false);
-
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle);
-          }
-
-          if (intervalHandle) {
-            clearInterval(intervalHandle);
-          }
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (intervalHandle) clearInterval(intervalHandle);
         }
       } catch (caughtError) {
-        if (cancelled) {
-          return;
-        }
-
+        if (cancelled) return;
         setError(
           caughtError instanceof Error
             ? caughtError.message
-            : "Failed to fetch deployment status.",
+            : "Failed to fetch deployment status."
         );
       } finally {
         if (!cancelled && backendStatus !== "deployed") {
@@ -117,12 +131,9 @@ export function DashboardClient() {
       setHasTimedOut(true);
       setIsPolling(false);
       setError(
-        "Build polling timed out while the deployment remained in the uploaded state.",
+        "Build polling timed out while the deployment remained in the uploaded state."
       );
-
-      if (intervalHandle) {
-        clearInterval(intervalHandle);
-      }
+      if (intervalHandle) clearInterval(intervalHandle);
     }, BUILD_TIMEOUT_MS);
 
     void pollStatus();
@@ -133,102 +144,72 @@ export function DashboardClient() {
     return () => {
       cancelled = true;
       setIsPolling(false);
-
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-
-      if (intervalHandle) {
-        clearInterval(intervalHandle);
-      }
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (intervalHandle) clearInterval(intervalHandle);
     };
   }, [deploymentId]);
 
+  // ─── Missing ID error state ─────────────────────────────────────
   if (!deploymentId) {
     return (
-      <section className="rounded-[2rem] border border-rose-400/20 bg-rose-500/10 p-8 text-rose-100">
-        <h1 className="text-2xl font-semibold text-white">
-          Missing deployment ID
-        </h1>
-        <p className="mt-3 text-sm leading-6">
-          Open the dashboard with a query parameter like
-          <span className="mx-1 rounded bg-white/10 px-2 py-1 font-mono text-xs text-rose-50">
+      <motion.section
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="rounded-2xl border p-8"
+        style={{
+          background: "rgba(239,68,68,0.06)",
+          borderColor: "rgba(239,68,68,0.2)",
+        }}
+      >
+        <h1 className="text-2xl font-bold text-white">Missing deployment ID</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Open the dashboard with a query parameter like{" "}
+          <code
+            className="font-mono-custom px-2 py-0.5 rounded text-xs"
+            style={{ background: "rgba(255,255,255,0.08)", color: "#f1f5f9" }}
+          >
             /dashboard?id=&lt;deploymentId&gt;
-          </span>
+          </code>
           .
         </p>
         <Link
           href="/"
-          className="mt-6 inline-flex rounded-2xl bg-white/10 px-4 py-2 text-sm font-medium text-white"
+          className="mt-6 inline-flex items-center gap-2 text-sm font-medium text-cyan-400 hover:text-cyan-300 transition-colors"
         >
-          Back to deploy page
+          <ArrowLeft size={14} />
+          Back to deploy
         </Link>
-      </section>
+      </motion.section>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <motion.div
+      className="space-y-5"
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, ease: [0.21, 0.47, 0.32, 0.98] }}
+    >
+      {/* Back link */}
+      <motion.div variants={fadeUp}>
+        <Link
+          href="/"
+          className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-300 transition-colors"
+        >
+          <ArrowLeft size={13} />
+          New deployment
+        </Link>
+      </motion.div>
+
+      {/* Main status card — uses displayStatus so each scene plays fully */}
       <StatusCard
         deploymentId={deploymentId}
         backendStatus={backendStatus}
-        frontendStatus={frontendStatus}
+        frontendStatus={displayStatus}
         previewUrl={previewUrl}
         error={error}
         isPolling={isPolling}
       />
-
-      <section className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-        <div className="rounded-[2rem] border border-white/10 bg-white/5 p-6">
-          <p className="text-sm font-medium uppercase tracking-[0.28em] text-sky-200/80">
-            Frontend mapping
-          </p>
-          <div className="mt-4 space-y-3 text-sm text-slate-300">
-            <p>
-              <span className="font-mono text-slate-100">uploaded</span> maps to
-              <span className="mx-1 rounded bg-sky-400/10 px-2 py-1 font-semibold text-sky-100">
-                building
-              </span>
-            </p>
-            <p>
-              <span className="font-mono text-slate-100">deployed</span> maps to
-              <span className="mx-1 rounded bg-emerald-400/10 px-2 py-1 font-semibold text-emerald-100">
-                success
-              </span>
-            </p>
-            <p>
-              <span className="font-mono text-slate-100">null</span> maps to
-              <span className="mx-1 rounded bg-amber-400/10 px-2 py-1 font-semibold text-amber-100">
-                pending
-              </span>
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-[2rem] border border-white/10 bg-white/5 p-6">
-          <div className="flex items-center gap-3">
-            <Spinner className="text-sky-300" />
-            <div>
-              <p className="text-sm font-medium text-white">
-                {frontendStatus === "success"
-                  ? "Success"
-                  : frontendStatus === "failed"
-                    ? "Failed"
-                    : frontendStatus === "building"
-                      ? "Building..."
-                      : "Pending"}
-              </p>
-              <p className="text-sm text-slate-400">
-                Polling every 2.5 seconds until the backend reports
-                <span className="mx-1 rounded bg-white/10 px-2 py-1 font-mono text-xs text-slate-100">
-                  deployed
-                </span>
-                or the timeout is reached.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
+    </motion.div>
   );
 }

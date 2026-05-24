@@ -1,10 +1,35 @@
 @import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;700&display=swap");
 
+/* ─── Theme tokens ─────────────────────────────────────────── */
 :root {
   color-scheme: dark;
+
+  --bg-base: #04070d;
+  --bg-panel: rgba(8, 17, 31, 0.82);
+  --bg-panel-solid: #08111f;
+
+  --cyan: #06b6d4;
+  --cyan-bright: #22d3ee;
+  --cyan-dim: rgba(6, 182, 212, 0.12);
+  --cyan-glow: rgba(6, 182, 212, 0.35);
+
+  --blue-deep: #0d1f3c;
+  --blue-mid: #0f2a4a;
+  --blue-accent: #1d4ed8;
+
+  --grid-line: rgba(6, 182, 212, 0.055);
+  --grid-size: 52px;
+
+  --success: #10b981;
+  --success-glow: rgba(16, 185, 129, 0.3);
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --danger-glow: rgba(239, 68, 68, 0.3);
 }
 
-* {
+/* ─── Reset ────────────────────────────────────────────────── */
+*, *::before, *::after {
   box-sizing: border-box;
 }
 
@@ -15,11 +40,11 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  background: #04070d;
-  color: #f8fafc;
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  background: var(--bg-base);
+  color: #f1f5f9;
+  font-family: "Space Grotesk", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 a {
@@ -27,7 +52,149 @@ a {
   text-decoration: none;
 }
 
-button,
-input {
+button, input {
   font: inherit;
 }
+
+/* ─── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(6, 182, 212, 0.25); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(6, 182, 212, 0.5); }
+
+/* ─── Background grid ───────────────────────────────────────── */
+.grid-bg {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+}
+
+/* ─── Glassmorphism panels ─────────────────────────────────── */
+.glass {
+  background: var(--bg-panel);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(6, 182, 212, 0.12);
+}
+
+.glass-solid {
+  background: rgba(8, 17, 31, 0.95);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(6, 182, 212, 0.15);
+}
+
+/* ─── Mono font utility ──────────────────────────────────────── */
+.font-mono-custom {
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+}
+
+/* ─── Keyframes ─────────────────────────────────────────────── */
+@keyframes pulse-ring {
+  0%   { transform: scale(0.95); opacity: 0.8; }
+  50%  { transform: scale(1.05); opacity: 0.4; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes spin-reverse {
+  from { transform: rotate(360deg); }
+  to   { transform: rotate(0deg); }
+}
+
+@keyframes glow-breathe {
+  0%, 100% { box-shadow: 0 0 20px var(--cyan-glow), 0 0 60px rgba(6,182,212,0.1); }
+  50%       { box-shadow: 0 0 40px var(--cyan-glow), 0 0 100px rgba(6,182,212,0.2); }
+}
+
+@keyframes scan-beam {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+
+@keyframes data-stream {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes flicker {
+  0%, 100%  { opacity: 1; }
+  8%        { opacity: 0.4; }
+  9%        { opacity: 1; }
+  55%       { opacity: 1; }
+  56%       { opacity: 0.6; }
+  57%       { opacity: 1; }
+  80%       { opacity: 1; }
+  81%       { opacity: 0.3; }
+  82%       { opacity: 1; }
+}
+
+@keyframes success-burst {
+  0%   { transform: scale(0.3); opacity: 0; }
+  40%  { transform: scale(1.15); opacity: 1; }
+  70%  { transform: scale(0.97); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes ripple-expand {
+  0%   { transform: scale(0); opacity: 0.8; }
+  100% { transform: scale(4); opacity: 0; }
+}
+
+@keyframes float-y {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-8px); }
+}
+
+@keyframes star-drift {
+  0%   { transform: translateY(0) translateX(0); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(-120vh) translateX(40px); opacity: 0; }
+}
+
+@keyframes progress-fill {
+  from { width: 0%; }
+  to   { width: 100%; }
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+@keyframes number-tick {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(-100%); }
+}
+
+@keyframes energy-flow {
+  0%   { stroke-dashoffset: 200; }
+  100% { stroke-dashoffset: 0; }
+}
+
+@keyframes danger-pulse {
+  0%, 100% { box-shadow: 0 0 20px var(--danger-glow), 0 0 60px rgba(239,68,68,0.1); }
+  50%       { box-shadow: 0 0 50px var(--danger-glow), 0 0 120px rgba(239,68,68,0.25); }
+}
+
+@keyframes success-glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px var(--success-glow), 0 0 60px rgba(16,185,129,0.1); }
+  50%       { box-shadow: 0 0 50px var(--success-glow), 0 0 120px rgba(16,185,129,0.25); }
+}
+
+/* ─── Animation utility classes ─────────────────────────────── */
+.animate-pulse-ring   { animation: pulse-ring 2s ease-in-out infinite; }
+.animate-spin-slow    { animation: spin-slow 8s linear infinite; }
+.animate-spin-reverse { animation: spin-reverse 12s linear infinite; }
+.animate-glow-breathe { animation: glow-breathe 3s ease-in-out infinite; }
+.animate-flicker      { animation: flicker 3s step-end infinite; }
+.animate-float-y      { animation: float-y 4s ease-in-out infinite; }
+.animate-danger-pulse { animation: danger-pulse 2s ease-in-out infinite; }
+.animate-success-glow { animation: success-glow-pulse 2s ease-in-out infinite; }
